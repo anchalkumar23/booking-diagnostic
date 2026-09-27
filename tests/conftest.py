@@ -8,6 +8,7 @@ os.environ["DATABASE_URL"] = "sqlite://"
 import pytest
 from fastapi.testclient import TestClient
 
+from app.config import settings
 from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
 
@@ -40,6 +41,11 @@ def auth_headers(client):
     resp = client.post("/auth/login", json={"email": "patient@example.com", "password": "password123"})
     token = resp.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture()
+def webhook_headers():
+    return {"X-Webhook-Secret": settings.webhook_secret}
 
 
 @pytest.fixture()

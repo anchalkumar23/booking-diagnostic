@@ -25,10 +25,25 @@ app.include_router(bookings.router)
 app.include_router(payments.router)
 
 
+_REDACT_FIELDS = {"password"}
+
+
+def _redact_errors(errors: list[dict]) -> list[dict]:
+    """Never let a rejected password value reach logs or the response body."""
+    out = []
+    for err in errors:
+        err = dict(err)
+        if err.get("loc") and str(err["loc"][-1]).lower() in _REDACT_FIELDS:
+            err["input"] = "***"
+        out.append(err)
+    return out
+
+
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    logger.warning("validation error on %s %s: %s", request.method, request.url.path, exc.errors())
-    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(exc.errors())})
+    errors = jsonable_encoder(_redact_errors(exc.errors()))
+    logger.warning("validation error on %s %s: %s", request.method, request.url.path, errors)
+    return JSONResponse(status_code=422, content={"detail": errors})
 
 
 @app.get("/health")

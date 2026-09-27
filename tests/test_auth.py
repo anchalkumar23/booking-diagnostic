@@ -15,6 +15,18 @@ def test_signup_short_password_rejected(client):
     assert resp.status_code == 422
 
 
+def test_signup_long_password_rejected(client):
+    resp = client.post("/auth/signup", json={"email": "b2@example.com", "password": "a" * 73})
+    assert resp.status_code == 422
+
+
+def test_signup_rejected_password_not_echoed_in_response(client):
+    """A validation failure must never leak the raw password back to the caller."""
+    resp = client.post("/auth/signup", json={"email": "b3@example.com", "password": "xyzpwd1"})
+    assert "xyzpwd1" not in resp.text
+    assert '"input":"***"' in resp.text
+
+
 def test_login_success(client):
     client.post("/auth/signup", json={"email": "c@example.com", "password": "password123"})
     resp = client.post("/auth/login", json={"email": "c@example.com", "password": "password123"})

@@ -7,14 +7,18 @@ from passlib.context import CryptContext
 from app.config import settings
 
 _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Precomputed once so a login for a non-existent email still pays bcrypt's
+# cost -- otherwise "unknown email" returns near-instantly while "wrong
+# password" takes bcrypt's ~100ms, leaking which emails are registered.
+_DUMMY_HASH = _pwd_context.hash("not-a-real-password")
 
 
 def hash_password(password: str) -> str:
     return _pwd_context.hash(password)
 
 
-def verify_password(password: str, hashed: str) -> bool:
-    return _pwd_context.verify(password, hashed)
+def verify_password(password: str, hashed: str | None) -> bool:
+    return _pwd_context.verify(password, hashed or _DUMMY_HASH)
 
 
 def create_access_token(user_id: str) -> str:

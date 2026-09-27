@@ -41,7 +41,7 @@ pip install -r requirements.txt
 pytest -v
 ```
 
-Tests run entirely against an in-memory SQLite database (forced via `DATABASE_URL` at the top of `tests/conftest.py`), so **no Postgres instance is required to run the test suite**. 34 tests cover auth, centre/test management, booking lifecycle, ownership checks, payment success/failure, and — most importantly — webhook idempotency (including a duplicate-delivery race and a "late success after user-cancel" case).
+Tests run entirely against an in-memory SQLite database (forced via `DATABASE_URL` at the top of `tests/conftest.py`), so **no Postgres instance is required to run the test suite**. 38 tests cover auth, credential handling, centre/test management, booking lifecycle, ownership checks, payment success/failure, webhook authentication, and — most importantly — webhook idempotency (including a duplicate-delivery race and a "late success after user-cancel" case).
 
 ## API endpoints
 
@@ -102,20 +102,22 @@ The booking `amount` is always the test's current price, set server-side — a c
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | POST | `/payments/` | required | Simulate processing payment for one's own `PENDING` booking |
-| POST | `/payments/webhook/` | — (provider callback) | Idempotent payment-status callback |
+| POST | `/payments/webhook/` | shared secret | Idempotent payment-status callback |
 
 ```bash
 # Direct simulated payment (random SUCCESS/FAILED unless force_result is given)
 curl -X POST localhost:8000/payments/ -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" -d '{"booking_id":"'$BOOKING_ID'"}'
 
-# Provider webhook
+# Provider webhook -- requires the X-Webhook-Secret header (WEBHOOK_SECRET env var,
+# defaults to "local-dev-webhook-secret" for local/demo use)
 curl -X POST localhost:8000/payments/webhook/ \
   -H "Content-Type: application/json" \
+  -H "X-Webhook-Secret: local-dev-webhook-secret" \
   -d '{"event_id":"evt_123","booking_id":"'$BOOKING_ID'","status":"SUCCESS"}'
 ```
 
-A `SUCCESS` result moves the booking to `CONFIRMED`; `FAILED` moves it to `FAILED`. Calling `/payments/` a second time for the same booking returns `409 Conflict`.
+A `SUCCESS` result moves the booking to `CONFIRMED`; `FAILED` moves it to `FAILED`. Calling `/payments/` a second time for the same booking returns `409 Conflict`. The webhook rejects requests with a missing/wrong `X-Webhook-Secret` with `401` before touching anything — otherwise anyone who obtained a booking id could force its status without ever paying.
 
 ## Database / schema design
 
@@ -147,6 +149,17 @@ A duplicate/late webhook also can't resurrect a booking the user has since cance
 
 The direct `POST /payments/` endpoint additionally refuses a second payment for a booking that already has one (`409`), so double-submitting that endpoint can't create two payment records either.
 
+## Security notes
+
+A few things worth calling out explicitly, since they came out of an actual security review of this code (not just assumed-safe defaults):
+
+- **JWT secret** is never hardcoded. If `JWT_SECRET` isn't set, a random one is generated at process startup instead of falling back to a known string — the trade-off is that restarting the process invalidates outstanding tokens, which is an acceptable cost for avoiding a fixed secret sitting in source control. Set `JWT_SECRET` yourself (via `.env`) for a stable secret across restarts.
+- **Webhook authentication.** `POST /payments/webhook/` requires an `X-Webhook-Secret` header (compared with a constant-time check) before it does anything else. Without this, the endpoint would let anyone who obtains a booking id force that booking's status — free-of-charge confirmation, or a denial-of-service against someone else's appointment — since nothing else ties the caller to a real payment provider.
+- **Credentials never touch logs or error responses.** A rejected password (e.g. too short) used to be echoed verbatim in both the `422` response body and the server log via FastAPI's default validation-error behavior; the `password` field's value is now redacted in both places.
+- **Password length is bounded** (8–72 characters). bcrypt silently ignores anything past 72 bytes, so leaving it unbounded meant two different passwords could hash identically past that point, and an oversized input could hit an unhandled exception instead of a clean validation error.
+- **Login response time doesn't reveal whether an email is registered.** Previously, logging in with an unknown email returned instantly (skipping the password check), while a known email with the wrong password took bcrypt's ~100ms — a timing side-channel for account enumeration. Login now always runs a bcrypt verification, against a dummy hash when the user doesn't exist, so both cases take the same time.
+- **Not fixed, deliberately:** `POST /auth/signup` still returns an explicit `409` for an already-registered email. This is a direct (non-timing) enumeration oracle, but closing it would mean a real UX change (e.g. "check your email" flows regardless of outcome) that felt out of scope here — flagging it rather than hiding it.
+
 ## Assumptions
 
 - **No Alembic migrations.** Tables are created via `Base.metadata.create_all()` on startup. For a project this size that's simpler and has one less moving part than wiring up a migration tool; see "What I'd improve" for what I'd do instead at a larger scale.
@@ -160,7 +173,8 @@ The direct `POST /payments/` endpoint additionally refuses a second payment for 
 - Alembic migrations instead of `create_all`, for real schema evolution.
 - A `retry payment` flow for `FAILED` bookings instead of one-shot-only payments.
 - Role-based access (admin vs. patient) for centre/test management.
-- Redis-backed rate limiting on `/auth/login` and the webhook endpoint.
+- Redis-backed rate limiting on `/auth/login`, `/auth/signup`, and the webhook endpoint (would also help mask the signup email-enumeration oracle noted above).
 - Celery/background worker to process webhooks asynchronously with retry/backoff instead of handling them inline in the request.
+- Replace the webhook's static shared-secret header with per-request HMAC signing (timestamp + body signature), closer to how real providers like Stripe do it.
 - Request-scoped structured logging (a request-id per log line) instead of the current minimal JSON formatter.
 - Integration tests running against a real Postgres container (via testcontainers) in addition to the current SQLite-based unit/integration tests, to catch Postgres-specific behavior.

@@ -66,11 +66,12 @@ def test_cannot_pay_for_invalid_booking_id(client, auth_headers):
     assert resp.status_code == 404
 
 
-def test_webhook_confirms_booking(client, auth_headers, seeded_test):
+def test_webhook_confirms_booking(client, auth_headers, seeded_test, webhook_headers):
     booking = _make_booking(client, auth_headers, seeded_test)
     resp = client.post(
         "/payments/webhook/",
         json={"event_id": "evt_1", "booking_id": booking["id"], "status": "SUCCESS"},
+        headers=webhook_headers,
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "processed"
@@ -79,13 +80,36 @@ def test_webhook_confirms_booking(client, auth_headers, seeded_test):
     assert booking_after["status"] == "CONFIRMED"
 
 
-def test_webhook_is_idempotent_on_repeated_event(client, auth_headers, seeded_test):
+def test_webhook_rejects_missing_secret(client, auth_headers, seeded_test):
+    booking = _make_booking(client, auth_headers, seeded_test)
+    resp = client.post(
+        "/payments/webhook/",
+        json={"event_id": "evt_nosecret", "booking_id": booking["id"], "status": "SUCCESS"},
+    )
+    assert resp.status_code == 401
+
+    # and the booking must be untouched -- still PENDING
+    booking_after = client.get(f"/bookings/{booking['id']}", headers=auth_headers).json()
+    assert booking_after["status"] == "PENDING"
+
+
+def test_webhook_rejects_wrong_secret(client, auth_headers, seeded_test):
+    booking = _make_booking(client, auth_headers, seeded_test)
+    resp = client.post(
+        "/payments/webhook/",
+        json={"event_id": "evt_wrongsecret", "booking_id": booking["id"], "status": "SUCCESS"},
+        headers={"X-Webhook-Secret": "not-the-real-secret"},
+    )
+    assert resp.status_code == 401
+
+
+def test_webhook_is_idempotent_on_repeated_event(client, auth_headers, seeded_test, webhook_headers):
     booking = _make_booking(client, auth_headers, seeded_test)
     payload = {"event_id": "evt_dup", "booking_id": booking["id"], "status": "SUCCESS"}
 
-    first = client.post("/payments/webhook/", json=payload)
-    second = client.post("/payments/webhook/", json=payload)
-    third = client.post("/payments/webhook/", json=payload)
+    first = client.post("/payments/webhook/", json=payload, headers=webhook_headers)
+    second = client.post("/payments/webhook/", json=payload, headers=webhook_headers)
+    third = client.post("/payments/webhook/", json=payload, headers=webhook_headers)
 
     assert first.json()["status"] == "processed"
     assert second.json()["status"] == "already_processed"
@@ -96,18 +120,19 @@ def test_webhook_is_idempotent_on_repeated_event(client, auth_headers, seeded_te
     assert booking_after["status"] == "CONFIRMED"
 
 
-def test_webhook_duplicate_does_not_flip_status_after_cancel(client, auth_headers, seeded_test):
+def test_webhook_duplicate_does_not_flip_status_after_cancel(client, auth_headers, seeded_test, webhook_headers):
     """A late/duplicate SUCCESS webhook must not resurrect a booking the user already cancelled."""
     booking = _make_booking(client, auth_headers, seeded_test)
     payload = {"event_id": "evt_late", "booking_id": booking["id"], "status": "SUCCESS"}
 
-    client.post("/payments/webhook/", json=payload)
+    client.post("/payments/webhook/", json=payload, headers=webhook_headers)
     client.patch(f"/bookings/{booking['id']}/cancel", headers=auth_headers)
 
     # Same event replayed (simulating a provider retry) after the user cancelled.
     resp = client.post(
         "/payments/webhook/",
         json={"event_id": "evt_late_2", "booking_id": booking["id"], "status": "SUCCESS"},
+        headers=webhook_headers,
     )
     assert resp.status_code == 200
 
@@ -115,17 +140,20 @@ def test_webhook_duplicate_does_not_flip_status_after_cancel(client, auth_header
     assert booking_after["status"] == "CANCELLED"
 
 
-def test_webhook_invalid_booking_id_404(client):
+def test_webhook_invalid_booking_id_404(client, webhook_headers):
     resp = client.post(
-        "/payments/webhook/", json={"event_id": "evt_x", "booking_id": "nope", "status": "SUCCESS"}
+        "/payments/webhook/",
+        json={"event_id": "evt_x", "booking_id": "nope", "status": "SUCCESS"},
+        headers=webhook_headers,
     )
     assert resp.status_code == 404
 
 
-def test_webhook_rejects_malformed_status(client, auth_headers, seeded_test):
+def test_webhook_rejects_malformed_status(client, auth_headers, seeded_test, webhook_headers):
     booking = _make_booking(client, auth_headers, seeded_test)
     resp = client.post(
         "/payments/webhook/",
         json={"event_id": "evt_bad", "booking_id": booking["id"], "status": "NOT_A_STATUS"},
+        headers=webhook_headers,
     )
     assert resp.status_code == 422

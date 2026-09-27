@@ -21,7 +21,11 @@ services:
       - "8000:8000"
     environment:
       DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/booking_diagnostic
-      JWT_SECRET: change-me-in-production
+      # JWT_SECRET intentionally left unset here: the app auto-generates a
+      # random one at startup when it's missing. Set your own via a .env
+      # file (docker compose reads it automatically) for a stable secret
+      # across restarts, e.g. in real deployments.
+      WEBHOOK_SECRET: local-dev-webhook-secret
     depends_on:
       db:
         condition: service_healthy

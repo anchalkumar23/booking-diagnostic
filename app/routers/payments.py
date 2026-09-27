@@ -1,11 +1,13 @@
 """Simulated payment processing + idempotent payment webhook."""
+import hmac
 import logging
 import random
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database import get_db
 from app.deps import get_current_user
 from app.models import Booking, BookingStatus, Payment, PaymentStatus, User, WebhookEvent
@@ -49,12 +51,23 @@ def create_payment(
 
 
 @router.post("/webhook/", status_code=status.HTTP_200_OK)
-def payment_webhook(body: WebhookPayload, db: Session = Depends(get_db)):
+def payment_webhook(
+    body: WebhookPayload,
+    db: Session = Depends(get_db),
+    x_webhook_secret: str = Header(default=""),
+):
     """Provider callback. Must tolerate exact-duplicate deliveries without
     double-applying state changes -- the unique constraint on event_id is the
     source of truth for "have we seen this before", checked both up front and
     again at commit time to close the race between two concurrent duplicates.
+
+    Requires a shared-secret header so an unauthenticated caller can't force
+    an arbitrary booking's status by guessing/obtaining its id -- checked
+    with a constant-time comparison so the check itself isn't a timing oracle.
     """
+    if not hmac.compare_digest(x_webhook_secret, settings.webhook_secret):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid webhook secret")
+
     existing = db.query(WebhookEvent).filter(WebhookEvent.event_id == body.event_id).first()
     if existing is not None:
         logger.info("webhook event_id=%s already processed, skipping", body.event_id)

@@ -25,6 +25,9 @@ def signup(body: SignupRequest, db: Session = Depends(get_db)):
 @router.post("/login", response_model=TokenResponse)
 def login(body: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == body.email).first()
-    if user is None or not verify_password(body.password, user.hashed_password):
+    # verify_password always runs, even for an unknown email, so response
+    # time doesn't reveal whether the account exists.
+    password_ok = verify_password(body.password, user.hashed_password if user else None)
+    if user is None or not password_ok:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid email or password")
     return TokenResponse(access_token=create_access_token(user.id))

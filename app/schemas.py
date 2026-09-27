@@ -12,12 +12,15 @@ from app.models import BookingStatus, PaymentStatus
 
 class SignupRequest(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=8)
+    # max_length=72: bcrypt silently ignores bytes beyond 72, so anything
+    # longer is dead weight -- capping it here also avoids an unhandled
+    # 500 from passlib's own oversized-input guard.
+    password: str = Field(min_length=8, max_length=72)
 
 
 class LoginRequest(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(max_length=72)
 
 
 class TokenResponse(BaseModel):
